@@ -10,6 +10,7 @@
 package org.elasticsearch.search.aggregations.bucket;
 
 import org.elasticsearch.action.index.IndexRequestBuilder;
+import org.elasticsearch.action.search.SearchRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.common.settings.Settings;
@@ -160,6 +161,28 @@ public class TermsDocCountErrorIT extends ESIntegTestCase {
 
         Map<String, Integer> shard5DocsPerTerm = Map.of("X", 1, "Y", 1, "Z", 1);
         buildIndex(shard5DocsPerTerm, "idx_fixed_docs_5", 5, builders);
+
+        Map<String, Integer> shard6DocsPerTerm = new HashMap<>();
+        shard6DocsPerTerm.put("A", 100);
+        shard6DocsPerTerm.put("B", 20);
+        shard6DocsPerTerm.put("C", 20);
+        shard6DocsPerTerm.put("X", 20);
+        shard6DocsPerTerm.put("Y", 20);
+        buildIndex(shard6DocsPerTerm, "idx_fixed_docs_6", 6, builders);
+
+        Map<String, Integer> shard7DocsPerTerm = new HashMap<>();
+        shard7DocsPerTerm.put("A", 50);
+        shard7DocsPerTerm.put("X", 40);
+        shard7DocsPerTerm.put("D", 30);
+        shard7DocsPerTerm.put("Y", 30);
+        buildIndex(shard7DocsPerTerm, "idx_fixed_docs_7", 7, builders);
+
+        Map<String, Integer> shard8DocsPerTerm = new HashMap<>();
+        shard8DocsPerTerm.put("A", 50);
+        shard8DocsPerTerm.put("Y", 40);
+        shard8DocsPerTerm.put("E", 30);
+        shard8DocsPerTerm.put("X", 30);
+        buildIndex(shard8DocsPerTerm, "idx_fixed_docs_8", 8, builders);
 
         indexRandom(true, builders);
         ensureSearchable();
@@ -972,6 +995,42 @@ public class TermsDocCountErrorIT extends ESIntegTestCase {
                 assertThat(bucket.getDocCountError(), equalTo(29L));
             }
         );
+    }
+
+    public void testFixedDocsBug() throws Exception {
+        SearchRequestBuilder requestBuilder = prepareSearch("idx_fixed_docs_6", "idx_fixed_docs_7", "idx_fixed_docs_8").addAggregation(
+            terms("terms").field(STRING_FIELD_NAME).showTermDocCountError(true).size(3).shardSize(3)
+        );
+
+        assertNoFailuresAndResponse(requestBuilder, response -> {
+            Terms terms = response.getAggregations().get("terms");
+            assertThat(terms, notNullValue());
+
+            List<? extends Bucket> buckets = terms.getBuckets();
+            assertThat(buckets, notNullValue());
+            assertThat(buckets.size(), equalTo(3));
+
+            Bucket bucket = buckets.get(0);
+            assertThat(bucket, notNullValue());
+            assertThat(bucket.getKey(), equalTo("A"));
+            assertThat(bucket.getDocCount(), equalTo(200L));
+            assertThat(bucket.getDocCountError(), equalTo(0L));
+
+            bucket = buckets.get(1);
+            assertThat(bucket, notNullValue());
+            assertThat(bucket.getKey(), equalTo("X"));
+            assertThat(bucket.getDocCount(), equalTo(40L));
+            assertThat(bucket.getDocCountError(), equalTo(50L));
+
+            bucket = buckets.get(2);
+            assertThat(bucket, notNullValue());
+            assertThat(bucket.getKey(), equalTo("Y"));
+            assertThat(bucket.getDocCount(), equalTo(40L));
+            assertThat(bucket.getDocCountError(), equalTo(50L));
+
+            // Bug? Should be 100.
+            assertThat(terms.getDocCountError(), equalTo(80L));
+        });
     }
 
     /**
