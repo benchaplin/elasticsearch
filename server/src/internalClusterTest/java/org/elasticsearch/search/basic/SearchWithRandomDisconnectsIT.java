@@ -25,6 +25,7 @@ import org.elasticsearch.test.disruption.NetworkDisruption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
@@ -72,7 +73,12 @@ public class SearchWithRandomDisconnectsIT extends AbstractDisruptionTestCase {
                 private void runMoreSearches() {
                     while (done.get() == false) {
                         final ListenableFuture<SearchResponse> f = new ListenableFuture<>();
-                        prepareRandomSearch().execute(f);
+                        try {
+                            prepareRandomSearch().execute(f);
+                        } catch (Exception e) {
+                            finishFuture.onResponse(null);
+                            return;
+                        }
                         if (f.isDone() == false) {
                             f.addListener(this);
                             return;
@@ -82,7 +88,8 @@ public class SearchWithRandomDisconnectsIT extends AbstractDisruptionTestCase {
                 }
             });
         }
-        for (int i = 0, n = randomIntBetween(50, 100); i < n; i++) {
+        final long disruptionDeadlineNanos = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
+        for (int i = 0, n = randomIntBetween(50, 100); i < n && System.nanoTime() < disruptionDeadlineNanos; i++) {
             NetworkDisruption networkDisruption = new NetworkDisruption(
                 isolateNode(internalCluster().getRandomNodeName()),
                 NetworkDisruption.DISCONNECT
