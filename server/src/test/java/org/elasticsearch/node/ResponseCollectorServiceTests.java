@@ -29,6 +29,7 @@ import java.util.concurrent.CountDownLatch;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.lessThan;
 
 public class ResponseCollectorServiceTests extends ESTestCase {
 
@@ -138,5 +139,33 @@ public class ResponseCollectorServiceTests extends ESTestCase {
         final Map<String, ResponseCollectorService.ComputedNodeStats> nodeStats = collector.getAllNodeStatistics();
         assertTrue(nodeStats.containsKey("node1"));
         assertFalse(nodeStats.containsKey("node2"));
+    }
+
+    public void testArsFormulaAdjustmentSettingChangesRank() {
+        // Start without the adjustment
+        Settings settings = Settings.builder().put(ResponseCollectorService.ARS_FORMULA_ADJUSTMENT.getKey(), false).build();
+        try (
+            ClusterService clusterService = new ClusterService(
+                settings,
+                new ClusterSettings(settings, ClusterSettings.BUILT_IN_CLUSTER_SETTINGS),
+                threadpool,
+                null
+            )
+        ) {
+            ResponseCollectorService responseCollectorService = new ResponseCollectorService(clusterService);
+
+            // 100ms response time, 10ms service time
+            responseCollectorService.addNodeStatistics("node1", 1, 100 * 1_000_000L, 10 * 1_000_000L);
+            double rankOriginal = responseCollectorService.getAllNodeStatistics().get("node1").rank(1);
+
+            // Dynamically update the setting
+            clusterService.getClusterSettings()
+                .applySettings(Settings.builder().put(ResponseCollectorService.ARS_FORMULA_ADJUSTMENT.getKey(), true).build());
+
+            double rankAdjusted = responseCollectorService.getAllNodeStatistics().get("node1").rank(1);
+
+            // (Response time - service time) = 100ms - 10ms = 90ms
+            assertThat(rankAdjusted, equalTo(rankOriginal - 90));
+        }
     }
 }
