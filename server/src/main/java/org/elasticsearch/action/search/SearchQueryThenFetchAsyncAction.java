@@ -534,6 +534,7 @@ public class SearchQueryThenFetchAsyncAction extends AbstractSearchAsyncAction<S
                 executeWithoutBatching(routing, request);
                 return;
             }
+            final ActionListener<SearchPhaseResult> statsCollector = searchTransportService.newStatsCollector(connection);
             searchTransportService.transportService()
                 .sendChildRequest(connection, NODE_SEARCH_ACTION_NAME, request, task, new TransportResponseHandler<NodeQueryResponse>() {
                     @Override
@@ -556,6 +557,7 @@ public class SearchQueryThenFetchAsyncAction extends AbstractSearchAsyncAction<S
                                 queryPhaseResultConsumer.addBatchedPartialResult(response.topDocsStats, response.mergeResult);
                             }
                         }
+                        boolean statsRecorded = false;
                         for (int i = 0; i < response.results.length; i++) {
                             var s = request.shards.get(i);
                             int shardIdx = s.shardIndex;
@@ -563,6 +565,10 @@ public class SearchQueryThenFetchAsyncAction extends AbstractSearchAsyncAction<S
                             switch (response.results[i]) {
                                 case Exception e -> onShardFailure(shardIdx, target, shardIterators[shardIdx], e);
                                 case SearchPhaseResult q -> {
+                                    if (statsRecorded == false && statsCollector != null) {
+                                        statsCollector.onResponse(q);
+                                        statsRecorded = true;
+                                    }
                                     q.setShardIndex(shardIdx);
                                     q.setSearchShardTarget(target);
                                     onShardResult(q);

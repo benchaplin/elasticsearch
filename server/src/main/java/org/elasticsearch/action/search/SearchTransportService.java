@@ -204,6 +204,14 @@ public class SearchTransportService {
         );
     }
 
+    @SuppressWarnings("unchecked")
+    ActionListener<SearchPhaseResult> newStatsCollector(Transport.Connection connection) {
+        if (responseWrapper == null) {
+            return null;
+        }
+        return (ActionListener<SearchPhaseResult>) responseWrapper.apply(connection, ActionListener.noop());
+    }
+
     public void sendExecuteQuery(
         Transport.Connection connection,
         final QuerySearchRequest request,
