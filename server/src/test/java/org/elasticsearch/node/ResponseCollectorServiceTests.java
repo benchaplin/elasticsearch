@@ -29,7 +29,6 @@ import java.util.concurrent.CountDownLatch;
 
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.greaterThan;
-import static org.hamcrest.Matchers.lessThan;
 
 public class ResponseCollectorServiceTests extends ESTestCase {
 

@@ -136,34 +136,21 @@ public final class ResponseCollectorService implements ClusterStateListener {
         public final double serviceTime;
 
         public ComputedNodeStats(String nodeId, int clientNum, int queueSize, double responseTime, double serviceTime) {
-            this(nodeId, clientNum, queueSize, responseTime, serviceTime, false);
-        }
-
-        public ComputedNodeStats(
-            String nodeId,
-            int clientNum,
-            int queueSize,
-            double responseTime,
-            double serviceTime,
-            boolean arsFormulaAdjustment
-        ) {
             this.nodeId = nodeId;
             this.clientNum = clientNum;
             this.queueSize = queueSize;
             this.responseTime = responseTime;
             this.serviceTime = serviceTime;
-            this.arsFormulaAdjustment = arsFormulaAdjustment;
+            this.arsFormulaAdjustment = false;
         }
 
         ComputedNodeStats(int clientNum, NodeStatistics nodeStats, boolean arsFormulaAdjustment) {
-            this(
-                nodeStats.nodeId,
-                clientNum,
-                (int) nodeStats.queueSize.getAverage(),
-                nodeStats.responseTime.getAverage(),
-                nodeStats.serviceTime,
-                arsFormulaAdjustment
-            );
+            this.nodeId = nodeStats.nodeId;
+            this.clientNum = clientNum;
+            this.queueSize = (int) nodeStats.queueSize.getAverage();
+            this.responseTime = nodeStats.responseTime.getAverage();
+            this.serviceTime = nodeStats.serviceTime;
+            this.arsFormulaAdjustment = arsFormulaAdjustment;
         }
 
         ComputedNodeStats(StreamInput in) throws IOException {
@@ -208,8 +195,8 @@ public final class ResponseCollectorService implements ClusterStateListener {
             // defines service time as the inverse of service rate (muBarS).
             double muBarSInverse = serviceTime / FACTOR;
 
-            // When arsFormulaAdjustment is enabled, the rS - muBarSInverse term is dropped.
             double innerRank = Math.pow(qHatS, queueAdjustmentFactor) * muBarSInverse;
+            // When arsFormulaAdjustment is enabled, the rS - muBarSInverse term is dropped.
             if (arsFormulaAdjustment == false) {
                 innerRank += rS - muBarSInverse;
             }
