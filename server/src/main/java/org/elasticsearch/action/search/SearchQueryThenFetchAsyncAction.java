@@ -534,7 +534,7 @@ public class SearchQueryThenFetchAsyncAction extends AbstractSearchAsyncAction<S
                 executeWithoutBatching(routing, request);
                 return;
             }
-            final ActionListener<SearchPhaseResult> statsCollector = searchTransportService.newStatsCollector(connection);
+            final ActionListener<? super SearchPhaseResult> statsCollector = searchTransportService.newStatsCollector(connection);
             searchTransportService.transportService()
                 .sendChildRequest(connection, NODE_SEARCH_ACTION_NAME, request, task, new TransportResponseHandler<NodeQueryResponse>() {
                     @Override
