@@ -25,6 +25,8 @@ import org.elasticsearch.test.disruption.NetworkDisruption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
@@ -33,7 +35,7 @@ import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcke
 @LuceneTestCase.SuppressFileSystems(value = "HandleLimitFS") // we sometimes have >2048 open files
 public class SearchWithRandomDisconnectsIT extends AbstractDisruptionTestCase {
 
-    public void testSearchWithRandomDisconnects() throws InterruptedException, ExecutionException {
+    public void testSearchWithRandomDisconnects() throws InterruptedException, ExecutionException, TimeoutException {
         // make sure we have a couple data nodes
         int minDataNodes = randomIntBetween(3, 7);
         internalCluster().ensureAtLeastNumDataNodes(minDataNodes);
@@ -82,6 +84,7 @@ public class SearchWithRandomDisconnectsIT extends AbstractDisruptionTestCase {
                 }
             });
         }
+        final int numNodes = internalCluster().size();
         for (int i = 0, n = randomIntBetween(50, 100); i < n; i++) {
             NetworkDisruption networkDisruption = new NetworkDisruption(
                 isolateNode(internalCluster().getRandomNodeName()),
@@ -92,10 +95,11 @@ public class SearchWithRandomDisconnectsIT extends AbstractDisruptionTestCase {
             networkDisruption.stopDisrupting();
             internalCluster().clearDisruptionScheme();
             ensureFullyConnectedCluster();
+            ensureStableCluster(numNodes);
         }
         done.set(true);
         for (PlainActionFuture<Void> future : futures) {
-            future.get();
+            future.get(60, TimeUnit.SECONDS);
         }
         ensureGreen(DISRUPTION_HEALING_OVERHEAD, indexNames);
         assertAcked(indicesAdmin().prepareDelete(indexNames));
