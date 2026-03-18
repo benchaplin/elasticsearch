@@ -576,6 +576,9 @@ public class SearchQueryThenFetchAsyncAction extends AbstractSearchAsyncAction<S
                             }
                         }
                         if (statsCollector != null && lastResult != null) {
+                            // The last result is the most likely to give us the most recent picture of queue size, as shards queries are
+                            // invoked in the same order as the response's results array.
+                            // The service time may vary across shards so the last result is simply an arbitrary choice.
                             statsCollector.onResponse(lastResult);
                         }
                     }
