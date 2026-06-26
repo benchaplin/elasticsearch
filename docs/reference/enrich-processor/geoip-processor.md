@@ -10,7 +10,7 @@ mapped_pages:
 The `geoip` processor adds information about the geographical location of an IPv4 or IPv6 address.
 
 $$$geoip-automatic-updates$$$
-By default, the processor uses the GeoLite2 City, GeoLite2 Country, and GeoLite2 ASN IP geolocation databases from [MaxMind](http://dev.maxmind.com/geoip/geoip2/geolite2/), shared under the CC BY-SA 4.0 license. It automatically downloads these databases if your nodes can connect to `storage.googleapis.com` domain and either:
+By default, the processor uses the GeoLite2 City, GeoLite2 Country, and GeoLite2 ASN IP geolocation databases from [MaxMind](http://dev.maxmind.com/geoip/geoip2/geolite2/), shared under the CC BY-SA 4.0 license. It automatically downloads these databases if your nodes can connect to the `[*.]d24a988e385e0074d717b6bdaea58f0d.r2.cloudflarestorage.com` domains and either:
 
 * `ingest.geoip.downloader.eager.download` is set to true
 * your cluster has at least one pipeline with a `geoip` or `ip_location` processor
@@ -225,7 +225,8 @@ True HTTP proxy support for GeoIP database downloads is not currently available 
 In a strict setup the following domains may need to be added to the allowed domains list:
 
 * `geoip.elastic.co`
-* `storage.googleapis.com`
+* `d24a988e385e0074d717b6bdaea58f0d.r2.cloudflarestorage.com`
+* `*.d24a988e385e0074d717b6bdaea58f0d.r2.cloudflarestorage.com`
 
 ### Use a custom endpoint [use-custom-geoip-endpoint]
 
@@ -263,7 +264,7 @@ You can create a service that mimics the Elastic GeoIP endpoint. You can then ge
 
     You can also use custom city, country, and ASN `.mmdb` files. These files must be uncompressed. The type (city, country, or ASN) will be pulled from the file metadata, so the filename does not matter.
 
-3. On {{ess}} deployments upload database using a [custom bundle](/reference/elasticsearch-plugins/cloud/ec-custom-bundles.md).
+3. On {{ech}} deployments upload database using a [custom bundle](docs-content://deploy-manage/deploy/elastic-cloud/upload-custom-plugins-bundles.md).
 4. On self-managed deployments copy the database files to `$ES_CONFIG/ingest-geoip`.
 5. In your `geoip` processors, configure the `database_file` parameter to use a custom database file.
 

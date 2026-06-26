@@ -10,7 +10,7 @@ mapped_pages:
 The `ip_location` processor adds information about the geographical location of an IPv4 or IPv6 address.
 
 $$$ip-location-automatic-updates$$$
-By default, the processor uses the GeoLite2 City, GeoLite2 Country, and GeoLite2 ASN IP geolocation databases from [MaxMind](http://dev.maxmind.com/geoip/geoip2/geolite2/), shared under the CC BY-SA 4.0 license. It automatically downloads these databases if your nodes can connect to `storage.googleapis.com` domain and either:
+By default, the processor uses the GeoLite2 City, GeoLite2 Country, and GeoLite2 ASN IP geolocation databases from [MaxMind](http://dev.maxmind.com/geoip/geoip2/geolite2/), shared under the CC BY-SA 4.0 license. It automatically downloads these databases if your nodes can connect to the `[*.]d24a988e385e0074d717b6bdaea58f0d.r2.cloudflarestorage.com` domains and either:
 
 * `ingest.geoip.downloader.eager.download` is set to true
 * your cluster has at least one pipeline with a `geoip` or `ip_location` processor
@@ -47,6 +47,7 @@ $$$ingest-ip-location-options$$$
 * If the GeoIP2 Domain database is used, then the following fields may be added under the `target_field`: `ip`, and `domain`. The fields actually added depend on what has been found and which properties were configured in `properties`.
 * If the GeoIP2 ISP database is used, then the following fields may be added under the `target_field`: `ip`, `asn`, `organization_name`, `network`, `isp`, `isp_organization_name`, `mobile_country_code`, and `mobile_network_code`. The fields actually added depend on what has been found and which properties were configured in `properties`.
 * If the GeoIP2 Enterprise database is used, then the following fields may be added under the `target_field`: `ip`, `country_iso_code`, `country_name`, `country_in_european_union`, `registered_country_iso_code`, `registered_country_name`, `registered_country_in_european_union`, `continent_code`, `continent_name`, `region_iso_code`, `region_name`, `city_name`, `postal_code`, `timezone`, `location`, `accuracy_radius`, `country_confidence`, `city_confidence`, `postal_confidence`, `asn`, `organization_name`, `network`, `hosting_provider`, `tor_exit_node`, `anonymous_vpn`, `anonymous`, `public_proxy`, `residential_proxy`, `domain`, `isp`, `isp_organization_name`, `mobile_country_code`, `mobile_network_code`, `user_type`, and `connection_type`. The fields actually added depend on what has been found and which properties were configured in `properties`.
+* If the IPinfo IP Plus database is used, then the following fields may be added under the `target_field`: `ip`, `city_name`, `region_name`, `region_iso_code`, `country_name`, `country_iso_code`, `continent_name`, `continent_code`, `location`, `timezone`, `postal_code`, `dma_code`, `geoname_id`, `accuracy_radius`, `asn`, `organization_name`, `domain`, `type`, `isp`, `mobile_country_code`, `mobile_network_code`, `asn_changed_date`, `geo_changed_date`, `anonymous`, `anycast`, `hosting`, `mobile`, `satellite`, `proxy`, `relay`, `tor`, `vpn`, `service`, and `network`. The fields actually added depend on what has been found and which properties were configured in `properties`.
 
 Here is an example that uses the default city database and adds the geographical information to the `ip_location` field based on the `ip` field:
 

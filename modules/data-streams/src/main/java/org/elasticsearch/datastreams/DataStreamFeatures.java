@@ -34,9 +34,13 @@ public class DataStreamFeatures implements FeatureSpecification {
 
     public static final NodeFeature FAILURE_STORE_IN_LOG_DATA_STREAMS = new NodeFeature("logs_data_streams.failure_store.enabled");
 
+    public static final NodeFeature DATA_STREAMS_MAPPINGS_API = new NodeFeature("data_stream.mappings_api");
+
+    public static final NodeFeature DATA_STREAMS_MODIFY_DELETE_INDEX = new NodeFeature("data_stream.modify.delete_index", true);
+
     @Override
     public Set<NodeFeature> getFeatures() {
-        return Set.of(DataStream.DATA_STREAM_FAILURE_STORE_FEATURE);
+        return Set.of(DataStream.DATA_STREAM_FAILURE_STORE_FEATURE, DATA_STREAMS_MODIFY_DELETE_INDEX);
     }
 
     @Override
@@ -46,7 +50,8 @@ public class DataStreamFeatures implements FeatureSpecification {
             DOWNSAMPLE_AGGREGATE_DEFAULT_METRIC_FIX,
             LOGS_STREAM_FEATURE,
             FAILURE_STORE_IN_LOG_DATA_STREAMS,
-            DOWNSAMPLE_MULTI_VALUE_DIMENSIONS
+            DOWNSAMPLE_MULTI_VALUE_DIMENSIONS,
+            DATA_STREAMS_MAPPINGS_API
         );
     }
 }

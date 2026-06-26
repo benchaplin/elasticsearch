@@ -359,8 +359,6 @@ public class TopHitsIT extends ESIntegTestCase {
     }
 
     public void testMixedSortFieldTypes() {
-        // Sorting across indices with different numeric field types (float vs long) should succeed;
-        // SortFieldValidation converts mixed numeric sorts to a common type (DOUBLE).
         assertNoFailuresAndResponse(
             prepareSearch("top_hits_float", "top_hits_long").setSize(0)
                 .addAggregation(topHits("hits").sort(SortBuilders.fieldSort("brand_id").order(SortOrder.ASC)).size(2)),
@@ -1139,6 +1137,7 @@ public class TopHitsIT extends ESIntegTestCase {
     }
 
     public void testNoStoredFields() throws Exception {
+        assumeNoColumnarId("test relies on not loading id by setting stored field spect to _none_", "idx");
         assertNoFailuresAndResponse(
             prepareSearch("idx").addAggregation(
                 terms("terms").executionHint(randomExecutionHint())
