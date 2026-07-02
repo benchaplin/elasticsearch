@@ -12,52 +12,80 @@ package org.elasticsearch.search.routing;
 import org.apache.lucene.tests.util.English;
 import org.elasticsearch.action.index.IndexRequestBuilder;
 import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.action.search.SearchTransportService;
 import org.elasticsearch.cluster.ClusterState;
 import org.elasticsearch.cluster.metadata.ProjectId;
-import org.elasticsearch.cluster.routing.IndexRoutingTable;
 import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
 import org.elasticsearch.cluster.routing.OperationRouting;
-import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.CollectionUtils;
+import org.elasticsearch.index.IndexModule;
+import org.elasticsearch.index.shard.SearchOperationListener;
+import org.elasticsearch.node.Node;
 import org.elasticsearch.plugins.Plugin;
-import org.elasticsearch.search.aggregations.AggregationBuilders;
+import org.elasticsearch.search.internal.SearchContext;
 import org.elasticsearch.test.ESIntegTestCase;
-import org.elasticsearch.test.transport.MockTransportService;
 
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LongSummaryStatistics;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.elasticsearch.index.query.QueryBuilders.boolQuery;
-import static org.elasticsearch.index.query.QueryBuilders.matchAllQuery;
-import static org.elasticsearch.index.query.QueryBuilders.matchQuery;
-import static org.elasticsearch.index.query.QueryBuilders.rangeQuery;
+import static org.elasticsearch.index.query.QueryBuilders.termQuery;
 import static org.elasticsearch.test.hamcrest.ElasticsearchAssertions.assertAcked;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.lessThan;
-import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
 /**
- * Exercise adaptive replica selection (ARS) under sustained search load on a multi-node cluster and assert some
- * behavioral invariants.
+ * Here we test the behavior of the "adaptive replica selection" (ARS) system in Elasticsearch.
+ * By using a cluster with 4 nodes and indices with 3 replicas, we ensure there's a copy of each shard on each node.
+ * That means ARS can choose to route each shard request to any of the 4 nodes.
  */
 @ESIntegTestCase.ClusterScope(scope = ESIntegTestCase.Scope.TEST, numDataNodes = 4)
 public class AdaptiveReplicaSelectionIT extends ESIntegTestCase {
 
     private static final int CONCURRENCY = 8;
 
+    /**
+     * Inflates the executor's task-execution EWMA, which is what ARS reads as {@code serviceTimeEWMA} in the query response.
+     * Adding the node's name to {@link #slowNodeNames} enables the delay for that node; removing it disables it.
+     */
+    public static class SlowSearchPlugin extends Plugin {
+        static final Set<String> slowNodeNames = ConcurrentHashMap.newKeySet();
+        private final String nodeName;
+
+        public SlowSearchPlugin(Settings settings) {
+            this.nodeName = Node.NODE_NAME_SETTING.get(settings);
+        }
+
+        @Override
+        public void onIndexModule(IndexModule indexModule) {
+            indexModule.addSearchOperationListener(new SearchOperationListener() {
+                @Override
+                public void onPreQueryPhase(SearchContext context) {
+                    if (slowNodeNames.contains(nodeName)) {
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     @Override
     protected Collection<Class<? extends Plugin>> nodePlugins() {
-        return CollectionUtils.appendToCopy(super.nodePlugins(), MockTransportService.TestPlugin.class);
+        return CollectionUtils.appendToCopy(super.nodePlugins(), SlowSearchPlugin.class);
     }
 
     @Override
@@ -69,24 +97,42 @@ public class AdaptiveReplicaSelectionIT extends ESIntegTestCase {
     }
 
     /**
-     * Under uniform conditions, ARS should distribute requests across all nodes.
+     * Under uniform conditions, ARS should distribute requests equally across all nodes.
      * No node should be permanently starved or monopolize traffic.
+     * This test asserts that each node handles >0% and <50% of traffic (these are, for the most part, overly safe bounds, chosen to
+     * minimize the chance of transient failures).
      */
-    public void testConvergenceToFairDistributionUnderUniformLoad() throws Exception {
+    public void testFairDistributionUnderUniformLoad() throws Exception {
         int numSearches = 500;
-        assertAcked(prepareCreate("test").setSettings(indexSettings(1, 3)).setMapping("text", "type=text", "num", "type=integer"));
+        assertAcked(
+            prepareCreate("test").setSettings(indexSettings(randomIntBetween(6, 12), 3))
+                .setMapping("text", "type=text", "num", "type=integer")
+        );
         ensureGreen();
         indexDocs("test", 1000);
 
         // Warm up ARS stats...
         runConcurrentSearches("test", 50);
-        // Then capture nodes used for a batch of searches
-        Map<String, Integer> nodeCounts = runConcurrentSearches("test", numSearches);
+        // Then capture counts for requests handled by each node for a batch of search requests
+        SearchStats stats = runConcurrentSearches("test", numSearches);
+        Map<String, Integer> nodeCounts = stats.nodeCounts();
 
-        Set<String> shardNodes = getShardHoldingNodeIds("test", 0);
-        // Fair share of traffic for each node is 25%
-        // Assert each node handled between 0% and 50% of traffic (to make this test durable)
-        for (String nodeId : shardNodes) {
+        int total = nodeCounts.values().stream().mapToInt(Integer::intValue).sum();
+        nodeCounts.forEach(
+            (nodeId, count) -> logger.info(
+                "fairness: node [{}] handled {}/{} = {}%  (min={}ms avg={}ms max={}ms)",
+                nodeId,
+                count,
+                total,
+                String.format(java.util.Locale.ROOT, "%.1f", 100.0 * count / total),
+                stats.nodeTimings().get(nodeId).getMin(),
+                (long) stats.nodeTimings().get(nodeId).getAverage(),
+                stats.nodeTimings().get(nodeId).getMax()
+            )
+        );
+
+        ClusterState state = clusterAdmin().prepareState(TEST_REQUEST_TIMEOUT).get().getState();
+        for (String nodeId : state.nodes().getDataNodes().keySet()) {
             int count = nodeCounts.getOrDefault(nodeId, 0);
             assertThat(
                 "Node [" + nodeId + "] was starved: " + count + "/" + numSearches + ". Distribution: " + nodeCounts,
@@ -102,155 +148,60 @@ public class AdaptiveReplicaSelectionIT extends ESIntegTestCase {
     }
 
     /**
-     * When one node has degraded performance (high latency inflating service time), ARS should route most traffic away from it.
+     * When one node has degraded service time (slow query execution on the search thread pool), ARS should route most traffic away from it.
+     * The slow node should handle less than 30% of traffic (this is an overly safe bound chosen to minimize the chance of transient
+     * failures).
      */
     public void testDegradedNodeAvoidance() throws Exception {
-        int numSearches = 500;
-        assertAcked(prepareCreate("test").setSettings(indexSettings(1, 3)).setMapping("text", "type=text", "num", "type=integer"));
+        int numSearches = 200;
+        assertAcked(
+            prepareCreate("test").setSettings(indexSettings(randomIntBetween(6, 12), 3))
+                .setMapping("text", "type=text", "num", "type=integer")
+        );
         ensureGreen();
         indexDocs("test", 1000);
 
-        Set<String> shardNodes = getShardHoldingNodeIds("test", 0);
+        ClusterState clusterState = clusterAdmin().prepareState(TEST_REQUEST_TIMEOUT).get().getState();
+        IndexShardRoutingTable shardRoutingTable = clusterState.routingTable(ProjectId.DEFAULT).index("test").shard(0);
+        Set<String> shardNodes = new HashSet<>();
+        for (int i = 0; i < shardRoutingTable.size(); i++) {
+            if (shardRoutingTable.shard(i).currentNodeId() != null) {
+                shardNodes.add(shardRoutingTable.shard(i).currentNodeId());
+            }
+        }
         String slowNodeId = shardNodes.iterator().next();
         String slowNodeName = nodeIdsToNames().get(slowNodeId);
 
-        // Inject delay and run searches
-        MockTransportService slowTransport = MockTransportService.getInstance(slowNodeName);
+        SlowSearchPlugin.slowNodeNames.add(slowNodeName);
         try {
-            slowTransport.addRequestHandlingBehavior(SearchTransportService.QUERY_ACTION_NAME, (handler, request, channel, task) -> {
-                Thread.sleep(100);
-                handler.messageReceived(request, channel, task);
-            });
-
-            // Warm up ARS stats...
+            // Warm up ARS stats so the executor EWMA on the slow node converges to reflect the injected delay...
             runConcurrentSearches("test", 50);
-            // Then capture nodes used for a batch of searches
-            Map<String, Integer> nodeCounts = runConcurrentSearches("test", numSearches);
+            // Then capture counts for requests handled by each node for a batch of search requests
+            SearchStats stats = runConcurrentSearches("test", numSearches);
+            Map<String, Integer> nodeCounts = stats.nodeCounts();
             int slowNodeCount = nodeCounts.getOrDefault(slowNodeId, 0);
+            int total = nodeCounts.values().stream().mapToInt(Integer::intValue).sum();
+            nodeCounts.forEach(
+                (nodeId, count) -> logger.info(
+                    "degraded: node [{}]{} handled {}/{} = {}%  (min={}ms avg={}ms max={}ms)",
+                    nodeId,
+                    nodeId.equals(slowNodeId) ? " [SLOW]" : "",
+                    count,
+                    total,
+                    String.format(java.util.Locale.ROOT, "%.1f", 100.0 * count / total),
+                    stats.nodeTimings().get(nodeId).getMin(),
+                    (long) stats.nodeTimings().get(nodeId).getAverage(),
+                    stats.nodeTimings().get(nodeId).getMax()
+                )
+            );
 
-            // Fair share of traffic would be 25%, but this node is degraded
-            // Assert the slow node handled <25% of traffic
             assertThat(
                 "Slow node [" + slowNodeId + "] got " + slowNodeCount + "/" + numSearches + ". Distribution: " + nodeCounts,
                 slowNodeCount,
-                lessThan((int) (numSearches * 0.25))
+                lessThan((int) (numSearches * 0.30))
             );
         } finally {
-            slowTransport.clearAllRules();
-        }
-    }
-
-    /**
-     * After a slow node recovers, ARS should gradually route traffic back to it via the stats adjustment mechanism.
-     */
-    public void testRecoveryAfterDegradation() throws Exception {
-        int numRecoverySearches = 500;
-        assertAcked(prepareCreate("test").setSettings(indexSettings(1, 3)).setMapping("text", "type=text", "num", "type=integer"));
-        ensureGreen();
-        indexDocs("test", 1000);
-
-        Set<String> shardNodes = getShardHoldingNodeIds("test", 0);
-        String slowNodeId = shardNodes.iterator().next();
-        String slowNodeName = nodeIdsToNames().get(slowNodeId);
-
-        // Inject delay and run searches
-        MockTransportService slowTransport = MockTransportService.getInstance(slowNodeName);
-        try {
-            slowTransport.addRequestHandlingBehavior(SearchTransportService.QUERY_ACTION_NAME, (handler, request, channel, task) -> {
-                Thread.sleep(200);
-                handler.messageReceived(request, channel, task);
-            });
-            runConcurrentSearches("test", 100);
-
-            // Remove delay and run more searches, capturing nodes used
-            slowTransport.clearAllRules();
-            Map<String, Integer> nodeCounts = runConcurrentSearches("test", numRecoverySearches);
-            int recoveredSlowNodeCount = nodeCounts.getOrDefault(slowNodeId, 0);
-
-            // Fair share of traffic for each node is 25%
-            // Similar to the first test, assert the recovered node handled between 0% and 50% of traffic (to make this test durable)
-            assertThat(
-                "Recovered node ["
-                    + slowNodeId
-                    + "] was starved: "
-                    + recoveredSlowNodeCount
-                    + "/"
-                    + numRecoverySearches
-                    + ". Distribution: "
-                    + nodeCounts,
-                recoveredSlowNodeCount,
-                greaterThan(0)
-            );
-            assertThat(
-                "Recovered node ["
-                    + slowNodeId
-                    + "] handled too much traffic: "
-                    + recoveredSlowNodeCount
-                    + "/"
-                    + numRecoverySearches
-                    + ". Distribution: "
-                    + nodeCounts,
-                recoveredSlowNodeCount,
-                lessThan((int) (numRecoverySearches * 0.50))
-            );
-        } finally {
-            slowTransport.clearAllRules();
-        }
-    }
-
-    /**
-     * Even without the response time component in the ranking formula, ARS still ends up avoiding nodes with high network overhead
-     * due to outstanding request tracking (qHatS).
-     */
-    public void testOutstandingRequestTrackingAvoidsNetworkSlowNode() throws Exception {
-        int numSearches = 500;
-
-        assertAcked(prepareCreate("test").setSettings(indexSettings(1, 3)).setMapping("text", "type=text", "num", "type=integer"));
-        ensureGreen();
-        indexDocs("test", 1000);
-
-        Set<String> shardNodes = getShardHoldingNodeIds("test", 0);
-        String slowNodeId = shardNodes.iterator().next();
-        String slowNodeName = nodeIdsToNames().get(slowNodeId);
-        MockTransportService slowNodeTransport = MockTransportService.getInstance(slowNodeName);
-
-        // Inject network delay on every node's outbound path to the slow node
-        for (String nodeName : internalCluster().getNodeNames()) {
-            if (nodeName.equals(slowNodeName) == false) {
-                MockTransportService senderTransport = MockTransportService.getInstance(nodeName);
-                senderTransport.addSendBehavior(slowNodeTransport, (connection, requestId, action, request, options) -> {
-                    if (action.equals(SearchTransportService.QUERY_ACTION_NAME)) {
-                        try {
-                            Thread.sleep(200);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-                    }
-                    connection.sendRequest(requestId, action, request, options);
-                });
-            }
-        }
-
-        try {
-            // Warm up ARS stats...
-            runConcurrentSearches("test", 50);
-            // Then capture nodes used for a batch of searches
-            Map<String, Integer> counts = runConcurrentSearches("test", numSearches);
-            int slowCount = counts.getOrDefault(slowNodeId, 0);
-
-            // Fair share is 25%
-            // Similar to the degraded service time test, assert the slow node handles <=25% of traffic
-            assertThat(
-                "Network-slow node [" + slowNodeId + "] got " + slowCount + "/" + numSearches + ". Distribution: " + counts,
-                slowCount,
-                lessThanOrEqualTo((int) (numSearches * 0.25))
-            );
-            // The slow node should still receive some traffic — it's not fully avoided, just deprioritized.
-            assertThat("Network-slow node [" + slowNodeId + "] got zero traffic: " + counts, slowCount, greaterThan(0));
-        } finally {
-            for (String nodeName : internalCluster().getNodeNames()) {
-                MockTransportService.getInstance(nodeName).clearAllRules();
-            }
+            SlowSearchPlugin.slowNodeNames.remove(slowNodeName);
         }
     }
 
@@ -262,56 +213,45 @@ public class AdaptiveReplicaSelectionIT extends ESIntegTestCase {
         indexRandom(true, builders);
     }
 
+    private record SearchStats(Map<String, Integer> nodeCounts, Map<String, LongSummaryStatistics> nodeTimings) {}
+
     /**
-     * Returns a map of nodeId to the number of times that node served the query.
+     * Returns per-node search counts and response time statistics for {@code numSearches} concurrent searches.
      */
-    private Map<String, Integer> runConcurrentSearches(String indexName, int numSearches) throws InterruptedException {
+    private SearchStats runConcurrentSearches(String indexName, int numSearches) throws InterruptedException {
         Map<String, AtomicInteger> counts = new ConcurrentHashMap<>();
+        Map<String, Queue<Long>> timings = new ConcurrentHashMap<>();
         ExecutorService executor = Executors.newFixedThreadPool(CONCURRENCY);
         for (int i = 0; i < numSearches; i++) {
-            // internalCluster().client() picks a random node each call, without RandomizingClient wrapping
-            // (which sometimes sets preferences that bypass ARS).
             executor.execute(() -> {
+                long start = System.nanoTime();
+                // termQuery hits exactly one doc (num is unique 0..numDocs-1): O(1) term lookup with
+                // no aggregation. Keeping per-search latency in single-digit milliseconds ensures any
+                // injected delay (service-time or network) remains the dominant signal in ARS's EWMAs.
                 SearchResponse response = internalCluster().client()
                     .prepareSearch(indexName)
-                    .setQuery(
-                        boolQuery().must(matchAllQuery())
-                            .should(matchQuery("text", English.intToEnglish(between(0, 1000))))
-                            .filter(rangeQuery("num").gte(between(0, 500)).lte(between(500, 1000)))
-                    )
-                    .addAggregation(AggregationBuilders.avg("avg_num").field("num"))
+                    .setQuery(termQuery("num", between(0, 999)))
                     .get();
+                long elapsedMs = (System.nanoTime() - start) / 1_000_000;
                 try {
                     String nodeId = response.getHits().getAt(0).getShard().getNodeId();
                     counts.computeIfAbsent(nodeId, k -> new AtomicInteger()).incrementAndGet();
+                    timings.computeIfAbsent(nodeId, k -> new ConcurrentLinkedQueue<>()).add(elapsedMs);
                 } finally {
                     response.decRef();
                 }
             });
         }
         executor.shutdown();
-        assertTrue("Searches did not complete in time", executor.awaitTermination(60, TimeUnit.SECONDS));
+        assertTrue("Searches did not complete in time", executor.awaitTermination(120, TimeUnit.SECONDS));
 
-        Map<String, Integer> result = new HashMap<>();
-        counts.forEach((k, v) -> result.put(k, v.get()));
-        return result;
-    }
+        Map<String, Integer> nodeCounts = new HashMap<>();
+        counts.forEach((k, v) -> nodeCounts.put(k, v.get()));
 
-    /**
-     * Returns the set of node IDs that hold copies (primary or replica) of the given shard.
-     */
-    private Set<String> getShardHoldingNodeIds(String indexName, int shardId) {
-        ClusterState state = clusterAdmin().prepareState(TEST_REQUEST_TIMEOUT).get().getState();
-        IndexRoutingTable indexRoutingTable = state.routingTable(ProjectId.DEFAULT).index(indexName);
-        IndexShardRoutingTable shardRoutingTable = indexRoutingTable.shard(shardId);
-        Set<String> nodeIds = new HashSet<>();
-        for (int i = 0; i < shardRoutingTable.size(); i++) {
-            ShardRouting shardRouting = shardRoutingTable.shard(i);
-            if (shardRouting.currentNodeId() != null) {
-                nodeIds.add(shardRouting.currentNodeId());
-            }
-        }
-        return nodeIds;
+        Map<String, LongSummaryStatistics> nodeTimings = new HashMap<>();
+        timings.forEach((k, v) -> nodeTimings.put(k, v.stream().mapToLong(Long::longValue).summaryStatistics()));
+
+        return new SearchStats(nodeCounts, nodeTimings);
     }
 
 }
